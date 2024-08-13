@@ -133,3 +133,5 @@ class DataIngestion:
                 UpdateExpression='SET Processed = :val1',
                 ExpressionAttributeValues={':val1': True},
             )
+
+#list
