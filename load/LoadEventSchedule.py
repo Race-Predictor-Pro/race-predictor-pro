@@ -1,9 +1,8 @@
 import fastf1
 import boto3
 import datetime
-from load.data_loader import DataIngestion
-from logger import Logger
 from boto3.dynamodb.conditions import Attr
+import json
 
 dynamodb = boto3.client('dynamodb')
 dynamodb_resource = boto3.resource('dynamodb')
@@ -12,8 +11,6 @@ lambda_client = boto3.client('lambda')
 cloudwatch_events = boto3.client('events')
 bucket_name = 'race-predictor-pro'
 prefix = 'f1_data'
-
-logger = Logger.get_logger()
 
 
 def create_dynamoDB_table():
@@ -36,13 +33,13 @@ def create_dynamoDB_table():
                     'WriteCapacityUnits': 5
                 }
             )
-            logger.info('Creating table' + events_table + '...')
+            print('Creating table' + events_table + '...')
             table_resources = dynamodb_resource.Table(events_table)
             table_resources.wait_until_exists()
-            logger.info(f'Table {events_table} created successfully')
+            print(f'Table {events_table} created successfully')
 
     except Exception as e:
-        logger.error(f"Error creating table {e}")
+        print(f"Error creating table {e}")
 
 
 def load_event_schedule_to_dynamodb(start_year, end_year):
@@ -63,7 +60,7 @@ def load_event_schedule_to_dynamodb(start_year, end_year):
                     'Processed': {'BOOL': event_processed}
                 }
             )
-    logger.info('Done loading event schedule')
+    print('Done loading event schedule')
 
 
 def schedule_next_race_trigger(rule_name='F1DataIngestionTrigger', lambda_function_name='F1DataIngestionLambda'):
@@ -77,7 +74,7 @@ def schedule_next_race_trigger(rule_name='F1DataIngestionTrigger', lambda_functi
 
         events = response['Items']
         if not events:
-            logger.warning("No unprocessed events found in the schedule.")
+            print("No unprocessed events found in the schedule.")
             return {
                 'statusCode': 404,
                 'body': 'No unprocessed events found in the schedule.'
@@ -86,7 +83,7 @@ def schedule_next_race_trigger(rule_name='F1DataIngestionTrigger', lambda_functi
         # Find the event with the earliest date
         next_event = min(events, key=lambda x: x['EventDate'])
         next_event_date = datetime.datetime.strptime(next_event['EventDate'], '%Y-%m-%dT%H:%M:%SZ')
-        logger.info(f"Next event is {next_event['EventName']} on {next_event_date}")
+        print(f"Next event is {next_event['EventName']} on {next_event_date}")
 
         # Schedule the Lambda function to run the day after the race
         trigger_date = next_event_date + datetime.timedelta(days=1)
@@ -101,25 +98,57 @@ def schedule_next_race_trigger(rule_name='F1DataIngestionTrigger', lambda_functi
             State='ENABLED'
         )['RuleArn']
 
-        # Add permission for CloudWatch to invoke the Lambda function
-        lambda_client.add_permission(
-            FunctionName=lambda_function_name,
-            StatementId=f'AllowExecutionFromCloudWatch_{rule_name}',
-            Action='lambda:InvokeFunction',
-            Principal='events.amazonaws.com',
-            SourceArn=rule_arn
-        )
+        try:
+            policy_response = lambda_client.get_policy(FunctionName=lambda_function_name)
+            policy = json.loads(policy_response['Policy'])
+            statements = policy.get('Statement', [])
 
-        # Add the Lambda function as a target for the CloudWatch rule
-        cloudwatch_events.put_targets(
-            Rule=rule_name,
-            Targets=[{
-                'Id': '1',
-                'Arn': lambda_client.get_function(FunctionName=lambda_function_name)['Configuration']['FunctionArn']
-            }]
-        )
+            permission_exists = any(
+                statement['Sid'] == f'AllowExecutionFromCloudWatch_{rule_name}' for statement in statements)
+            if not permission_exists:
+                # Add permission if it doesn't exist
+                lambda_client.add_permission(
+                    FunctionName=lambda_function_name,
+                    StatementId=f'AllowExecutionFromCloudWatch_{rule_name}',
+                    Action='lambda:InvokeFunction',
+                    Principal='events.amazonaws.com',
+                    SourceArn=rule_arn
+                )
+                print(f"Permission added for CloudWatch to invoke the Lambda function.")
+            else:
+                print(f"Permission already exists, no need to add.")
 
-        logger.info(f"Scheduled next race trigger for {trigger_date}")
+        except lambda_client.exceptions.ResourceNotFoundException:
+            # If there is no policy attached to the function, it will raise ResourceNotFoundException
+            # Proceed to add the permission as it's the first one being added.
+            lambda_client.add_permission(
+                FunctionName=lambda_function_name,
+                StatementId=f'AllowExecutionFromCloudWatch_{rule_name}',
+                Action='lambda:InvokeFunction',
+                Principal='events.amazonaws.com',
+                SourceArn=rule_arn
+            )
+
+        # Check if the Lambda function is already a target for the CloudWatch rule
+        existing_targets = cloudwatch_events.list_targets_by_rule(Rule=rule_name)['Targets']
+        target_exists = any(
+            target['Arn'] == lambda_client.get_function(FunctionName=lambda_function_name)['Configuration'][
+                'FunctionArn'] for target in existing_targets)
+
+        if not target_exists:
+            # Add the Lambda function as a target for the CloudWatch rule
+            cloudwatch_events.put_targets(
+                Rule=rule_name,
+                Targets=[{
+                    'Id': '1',
+                    'Arn': lambda_client.get_function(FunctionName=lambda_function_name)['Configuration']['FunctionArn']
+                }]
+            )
+            print(f"Lambda function added as a target for CloudWatch rule.")
+        else:
+            print(f"Lambda function is already a target, no need to add.")
+
+        print(f"Scheduled next race trigger for {trigger_date}")
 
         return {
             'statusCode': 200,
@@ -127,7 +156,7 @@ def schedule_next_race_trigger(rule_name='F1DataIngestionTrigger', lambda_functi
         }
 
     except Exception as e:
-        logger.error(f"Error scheduling next race trigger: {e}")
+        print(f"Error scheduling next race trigger: {e}")
         return {
             'statusCode': 500,
             'body': f"Error scheduling next race trigger: {e}"

@@ -134,4 +134,3 @@ class DataIngestion:
                 ExpressionAttributeValues={':val1': True},
             )
 
-#list
