@@ -5,12 +5,14 @@ import io
 import datetime
 
 class F1DataIngestion:
+    """Data ingestion class for fetching and uploading"""
     def __init__(self, bucket, prefix):
         self.s3_client = boto3.client('s3')
         self.bucket = bucket
         self.prefix = prefix
 
     def fetch_and_upload_race_data(self, year, race_name, session_types):
+        """Fetch data from open f1 for the race and upload to S3"""
         for session_type in session_types:
             # Load the session data
             session = fastf1.get_session(year, race_name, session_type)
@@ -37,11 +39,13 @@ class F1DataIngestion:
                 self.upload_parquet_to_s3(track_status_df, track_status_s3_path)
 
     def upload_parquet_to_s3(self, df, s3_path):
+        """Util function, takes in the df from the predictor and converts it to parquet format and then upload to S3"""
         parquet_buffer = io.BytesIO()
         df.to_parquet(parquet_buffer, index=False)
         self.s3_client.put_object(Bucket=self.bucket, Key=s3_path, Body=parquet_buffer.getvalue())
 
     def fetch_latest_race_data(self):
+        """Fetch the data for latest date"""
         # Get the current year
         year = datetime.datetime.now().year
         schedule = fastf1.get_event_schedule(year)
