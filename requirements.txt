@@ -1,0 +1,4 @@
+boto3==1.35.0
+pandas==2.2.2
+fastf1==3.4.0
+fastparquet==2024.5.0
