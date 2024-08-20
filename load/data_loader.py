@@ -5,6 +5,7 @@ import pandas as pd
 import datetime
 from logger import Logger
 from boto3.dynamodb.conditions import Attr
+from fastf1.core import DataNotLoadedError
 
 dynamodb_client = boto3.client('dynamodb')
 dynamodb_resource = boto3.resource('dynamodb')
@@ -48,35 +49,52 @@ class DataIngestion:
 
     def fetch_and_upload_race(self, year, race_name, session_types):
         for session_type in session_types:
-            f1_session = fastf1.get_session(year, race_name, session_type)
-            f1_session.load()
+            try:
+                f1_session = fastf1.get_session(year, race_name, session_type)
+                f1_session.load()
 
-            # Define S3 paths
-            base_path = f"{self.prefix}/{year}/{race_name.replace(' ', '-').lower()}"
+                # Define S3 paths
+                base_path = f"{self.prefix}/{year}/{race_name.replace(' ', '-').lower()}"
 
-            if session_type == 'R':
-                drivers = f1_session.drivers
-                dummy_df = []
+                if session_type == 'R':
+                    drivers = f1_session.drivers
+                    dummy_df = []
 
-                for driver in drivers:
-                    df = pd.DataFrame(f1_session.get_driver(driver)).T
-                    dummy_df.append(df)
+                    for driver in drivers:
+                        df = pd.DataFrame(f1_session.get_driver(driver)).T
+                        dummy_df.append(df)
 
-                driver_df = pd.concat(dummy_df, ignore_index=True)
-                drivers_info_s3_path = f"{base_path}/{session_type.lower()}_drivers_info.parquet"
-                self.upload_parquet_to_s3(driver_df, drivers_info_s3_path)
+                    driver_df = pd.concat(dummy_df, ignore_index=True)
+                    drivers_info_s3_path = f"{base_path}/{session_type.lower()}_drivers_info.parquet"
+                    self.upload_parquet_to_s3(driver_df, drivers_info_s3_path)
 
-            # Individual lap information
-            laps_df = f1_session.laps
-            weather_df = f1_session.weather_data
+                try:
 
-            # s3 paths
-            lap_s3_path = f"{base_path}/{session_type.lower()}_laps.parquet"
-            weather_s3_path = f"{base_path}/{session_type.lower()}_weather.parquet"
+                    try:
+                        laps_df = f1_session.laps
+                        lap_s3_path = f"{base_path}/{session_type.lower()}_laps.parquet"
+                        self.upload_parquet_to_s3(laps_df, lap_s3_path)
+                    except DataNotLoadedError as e:
+                        print(f"Laps data not loaded: {e}")
+                        laps_df = None
 
-            # Convert DataFrames to Parquet and upload to S3
-            self.upload_parquet_to_s3(laps_df, lap_s3_path)
-            self.upload_parquet_to_s3(weather_df, weather_s3_path)
+                    try:
+                        weather_df = f1_session.weather_data
+                        weather_s3_path = f"{base_path}/{session_type.lower()}_weather.parquet"
+                        self.upload_parquet_to_s3(weather_df, weather_s3_path)
+                    except DataNotLoadedError as e:
+                        print(f"Weather data not loaded: {e}")
+                        weather_df = None
+
+                except Exception as e:
+                    print(f"An unexpected error occurred: {e}")
+
+            except ValueError as e:
+                print(f"Session {session_type} does not exist for this race : {e}")
+                continue
+
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
 
     def upload_parquet_to_s3(self, df, s3_path):
         try:
@@ -133,4 +151,3 @@ class DataIngestion:
                 UpdateExpression='SET Processed = :val1',
                 ExpressionAttributeValues={':val1': True},
             )
-
